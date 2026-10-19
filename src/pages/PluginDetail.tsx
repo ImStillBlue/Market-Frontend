@@ -14,6 +14,13 @@ import {
   getNormalizedPluginVersions,
   getPluginCompatibilitySummary,
   cleanReleaseNotes,
+  PUMPKIN_SERVER_PROFILES,
+  formatPumpkinVersionBadge,
+  getSavedServerProfileId,
+  setSavedServerProfileId,
+  isVersionCompatibleWithServer,
+  findRecommendedVersionForServer,
+  cachePluginVersions,
   type NormalizedPluginVersion,
 } from '../utils/compatibility';
 import { extractWasmPluginApiVersions } from '../utils/fileValidation';
@@ -511,9 +518,15 @@ const PluginDetail = () => {
     return 'overview';
   });
   const [versionTrackFilter, setVersionTrackFilter] = useState<string>('all');
-  const [pumpkinFilter, setPumpkinFilter] = useState<string>('all');
+  const [pumpkinFilter, setPumpkinFilter] = useState<string>(() => getSavedServerProfileId() || 'all');
   const [apiFilter, setApiFilter] = useState<string>('all');
   const [downloadingVersion, setDownloadingVersion] = useState<string | null>(null);
+
+  const handleSelectServerFilter = (serverId: string) => {
+    const normalized = serverId || 'all';
+    setPumpkinFilter(normalized);
+    setSavedServerProfileId(normalized === 'all' ? '' : normalized);
+  };
 
   // Review Report State
   const [reviewReportOpen, setReviewReportOpen] = useState<number | null>(null);
@@ -543,6 +556,7 @@ const PluginDetail = () => {
     setError(null);
     api.get(`/plugins/${id}`).then(res => {
       setPlugin(res.data);
+      cachePluginVersions(res.data);
       if (res.data.youtube_video_url) {
         setMainScreenshot('video');
       } else if (res.data.screenshots?.length > 0) {
@@ -731,12 +745,17 @@ const PluginDetail = () => {
     return getPluginCompatibilitySummary(plugin, probedApiVersions);
   }, [plugin, probedApiVersions]);
 
+  const recommendedForSelectedServer = useMemo(() => {
+    if (!pumpkinFilter || pumpkinFilter === 'all') return undefined;
+    return findRecommendedVersionForServer(normalizedVersions, pumpkinFilter);
+  }, [normalizedVersions, pumpkinFilter]);
+
   const filteredVersions = useMemo(() => {
     return normalizedVersions.filter((v) => {
       if (versionTrackFilter !== 'all' && (v.track || 'stable') !== versionTrackFilter) {
         return false;
       }
-      if (pumpkinFilter !== 'all' && !v.pumpkinVersions.includes(pumpkinFilter)) {
+      if (pumpkinFilter !== 'all' && !isVersionCompatibleWithServer(v, pumpkinFilter)) {
         return false;
       }
       if (apiFilter !== 'all' && !v.apiVersions.includes(apiFilter)) {
@@ -1306,22 +1325,25 @@ const PluginDetail = () => {
                   {latest.pumpkinVersions.length > 0 && (
                     <div className="compat-group">
                       <span className="compat-label">
-                        <Layers size={12} color="var(--primary)" /> Pumpkin:
+                        <Layers size={12} color="var(--primary)" /> Pumpkin Server:
                       </span>
-                      {latest.pumpkinVersions.map(pv => (
-                        <span key={pv} className="compat-badge pumpkin">
-                          {pv}
-                        </span>
-                      ))}
+                      {latest.pumpkinVersions.map(pv => {
+                        const fmt = formatPumpkinVersionBadge(pv);
+                        return (
+                          <span key={pv} className="compat-badge pumpkin" title={`Build tag: ${fmt.rawTag}`}>
+                            {fmt.title}{fmt.mcVersion ? ` · ${fmt.mcVersion}` : ''}
+                          </span>
+                        );
+                      })}
                     </div>
                   )}
                   {latest.apiVersions.length > 0 && (
                     <div className="compat-group">
                       <span className="compat-label">
-                        <Cpu size={12} color="#38bdf8" /> Plugin API:
+                        <Cpu size={12} color="#38bdf8" /> WASM API:
                       </span>
                       {latest.apiVersions.map(av => (
-                        <span key={av} className="compat-badge api">
+                        <span key={av} className="compat-badge api" title={`WIT pumpkin:plugin@${av}`}>
                           v{av}
                         </span>
                       ))}
@@ -1367,6 +1389,86 @@ const PluginDetail = () => {
     {/* VERSIONS TAB */}
     {activeTab === 'versions' && (
       <section className="version-history-section" aria-label="Plugin version history">
+        {/* Interactive Server Compatibility Selector */}
+        <div className="server-compat-picker-bar" style={{ marginBottom: '1rem' }}>
+          <div className="server-compat-picker-info">
+            <div className="server-compat-picker-title">
+              <Layers size={16} color="var(--primary)" />
+              <span>Which Pumpkin server version are you running?</span>
+            </div>
+            <p className="server-compat-picker-sub">
+              Pick your server version to filter compatible releases and highlight the recommended download.
+            </p>
+          </div>
+          <div className="server-compat-picker-pills">
+            <button
+              type="button"
+              className={`server-compat-pill ${pumpkinFilter === 'all' ? 'active' : ''}`}
+              onClick={() => handleSelectServerFilter('all')}
+            >
+              All Releases
+            </button>
+            {PUMPKIN_SERVER_PROFILES.map((profile) => {
+              const active = pumpkinFilter === profile.id;
+              return (
+                <button
+                  key={profile.id}
+                  type="button"
+                  className={`server-compat-pill ${active ? 'active' : ''}`}
+                  onClick={() => handleSelectServerFilter(active ? 'all' : profile.id)}
+                  title={profile.description}
+                >
+                  {active && <CheckCircle2 size={13} />}
+                  <span>{profile.shortLabel}</span>
+                  {profile.isLatest && <span className="server-compat-pill-tag">Latest</span>}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {pumpkinFilter !== 'all' && recommendedForSelectedServer && (
+          <div
+            style={{
+              marginBottom: '1.1rem',
+              padding: '0.85rem 1.15rem',
+              borderRadius: '10px',
+              background: 'rgba(34, 197, 94, 0.1)',
+              border: '1px solid rgba(34, 197, 94, 0.3)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '1rem',
+              flexWrap: 'wrap',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', fontSize: '0.86rem' }}>
+              <CheckCircle2 size={18} color="#4ade80" />
+              <span>
+                Recommended release for{' '}
+                <strong>
+                  {PUMPKIN_SERVER_PROFILES.find((p) => p.id === pumpkinFilter)?.shortLabel || `Pumpkin ${pumpkinFilter}`}
+                </strong>
+                : <strong style={{ fontFamily: 'var(--font-mono)', color: '#4ade80' }}>{recommendedForSelectedServer.displayVersion}</strong>
+                {!recommendedForSelectedServer.isLatest && (
+                  <span style={{ color: 'var(--text-muted)', marginLeft: 6 }}>
+                    (newer releases target a newer Pumpkin version)
+                  </span>
+                )}
+              </span>
+            </div>
+            <button
+              type="button"
+              className="version-download-btn"
+              onClick={() => handleVersionDownload(recommendedForSelectedServer)}
+              disabled={downloadingVersion === recommendedForSelectedServer.version}
+            >
+              <Download size={14} />
+              <span>Download {recommendedForSelectedServer.displayVersion}</span>
+            </button>
+          </div>
+        )}
+
         <div className="version-filter-bar">
           <div>
             <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 800, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -1391,20 +1493,6 @@ const PluginDetail = () => {
               <option value="alpha">Alpha</option>
             </select>
 
-            {compatibilitySummary.allPumpkinVersions.length > 0 && (
-              <select
-                aria-label="Filter by Pumpkin version"
-                className="version-filter-select"
-                value={pumpkinFilter}
-                onChange={e => setPumpkinFilter(e.target.value)}
-              >
-                <option value="all">All Pumpkin Releases</option>
-                {compatibilitySummary.allPumpkinVersions.map(pv => (
-                  <option key={pv} value={pv}>Pumpkin {pv}</option>
-                ))}
-              </select>
-            )}
-
             {compatibilitySummary.allApiVersions.length > 0 && (
               <select
                 aria-label="Filter by Plugin API version"
@@ -1412,9 +1500,9 @@ const PluginDetail = () => {
                 value={apiFilter}
                 onChange={e => setApiFilter(e.target.value)}
               >
-                <option value="all">All Plugin API Versions</option>
+                <option value="all">All WASM API Versions</option>
                 {compatibilitySummary.allApiVersions.map(av => (
-                  <option key={av} value={av}>Plugin API v{av}</option>
+                  <option key={av} value={av}>WASM API v{av}</option>
                 ))}
               </select>
             )}
@@ -1426,7 +1514,7 @@ const PluginDetail = () => {
                 style={{ padding: '0.4rem 0.75rem', fontSize: '0.76rem', height: 'auto' }}
                 onClick={() => {
                   setVersionTrackFilter('all');
-                  setPumpkinFilter('all');
+                  handleSelectServerFilter('all');
                   setApiFilter('all');
                 }}
               >
@@ -1438,7 +1526,18 @@ const PluginDetail = () => {
 
         {filteredVersions.length === 0 ? (
           <div className="empty-reviews-prompt" style={{ textAlign: 'center', padding: '2.5rem 1rem' }}>
-            No releases match the selected compatibility filters.
+            <p style={{ margin: '0 0 0.75rem' }}>No releases match the selected server or compatibility filter.</p>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => {
+                setVersionTrackFilter('all');
+                handleSelectServerFilter('all');
+                setApiFilter('all');
+              }}
+            >
+              Show All Releases ({normalizedVersions.length})
+            </button>
           </div>
         ) : (
           <div className="version-list">
@@ -1446,11 +1545,13 @@ const PluginDetail = () => {
               const notes = cleanReleaseNotes(v.release_notes);
               const isDownloadingThis = downloadingVersion === v.version;
               const sizeBytes = v.file_size ?? (v.isLatest ? plugin.file_size : undefined);
+              const isRecommendedForServer =
+                pumpkinFilter !== 'all' && recommendedForSelectedServer?.version === v.version;
 
               return (
                 <div
                   key={v.id || v.version}
-                  className={`version-card ${v.isLatest ? 'is-latest' : ''}`}
+                  className={`version-card ${v.isLatest || isRecommendedForServer ? 'is-latest' : ''}`}
                 >
                   <div className="version-card-header">
                     <div className="version-card-title-group">
@@ -1458,6 +1559,11 @@ const PluginDetail = () => {
                       {v.isLatest && (
                         <span className="version-latest-badge">
                           <Check size={11} /> Latest Release
+                        </span>
+                      )}
+                      {isRecommendedForServer && !v.isLatest && (
+                        <span className="version-latest-badge">
+                          <Check size={11} /> Recommended for Your Server
                         </span>
                       )}
                       <span className={`version-track-badge ${v.track || 'stable'}`}>
@@ -1496,14 +1602,21 @@ const PluginDetail = () => {
                   <div className="version-compat-grid">
                     <div className="compat-group">
                       <span className="compat-label">
-                        <Layers size={13} color="var(--primary)" /> Supported Pumpkin Releases:
+                        <Layers size={13} color="var(--primary)" /> Supported Pumpkin Server:
                       </span>
                       {v.pumpkinVersions.length > 0 ? (
-                        v.pumpkinVersions.map(pv => (
-                          <span key={pv} className="compat-badge pumpkin">
-                            Pumpkin {pv}
-                          </span>
-                        ))
+                        v.pumpkinVersions.map(pv => {
+                          const fmt = formatPumpkinVersionBadge(pv);
+                          return (
+                            <span
+                              key={pv}
+                              className="compat-badge pumpkin"
+                              title={`Full Pumpkin build tag: ${fmt.rawTag}`}
+                            >
+                              {fmt.title}{fmt.mcVersion ? ` (${fmt.mcVersion})` : ''}
+                            </span>
+                          );
+                        })
                       ) : (
                         <span className="compat-badge unspecified">Not specified</span>
                       )}
@@ -1511,12 +1624,16 @@ const PluginDetail = () => {
 
                     <div className="compat-group">
                       <span className="compat-label">
-                        <Cpu size={13} color="#38bdf8" /> Supported Plugin API:
+                        <Cpu size={13} color="#38bdf8" /> WASM Plugin API:
                       </span>
                       {v.apiVersions.length > 0 ? (
                         v.apiVersions.map(av => (
-                          <span key={av} className="compat-badge api">
-                            API v{av}
+                          <span
+                            key={av}
+                            className="compat-badge api"
+                            title={`WIT interface package: pumpkin:plugin@${av}`}
+                          >
+                            WIT API v{av}
                           </span>
                         ))
                       ) : (
@@ -2031,23 +2148,36 @@ const PluginDetail = () => {
     )}
     {compatibilitySummary.latestPumpkinVersions.length > 0 && (
       <div className="stat-item" style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
-        <span style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>Supported Pumpkin Releases:</span>
+        <span style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>Supported Pumpkin Server:</span>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
-          {compatibilitySummary.latestPumpkinVersions.map(pv => (
-            <span key={pv} className="compat-badge pumpkin" style={{ fontSize: '0.68rem', padding: '1px 6px' }}>
-              {pv}
-            </span>
-          ))}
+          {compatibilitySummary.latestPumpkinVersions.map(pv => {
+            const fmt = formatPumpkinVersionBadge(pv);
+            return (
+              <span
+                key={pv}
+                className="compat-badge pumpkin"
+                style={{ fontSize: '0.68rem', padding: '2px 7px' }}
+                title={`Full Pumpkin build tag: ${fmt.rawTag}`}
+              >
+                {fmt.title}{fmt.mcVersion ? ` (${fmt.mcVersion})` : ''}
+              </span>
+            );
+          })}
         </div>
       </div>
     )}
     {compatibilitySummary.latestApiVersions.length > 0 && (
       <div className="stat-item" style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
-        <span style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>Supported Plugin API:</span>
+        <span style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>WASM Plugin API:</span>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
           {compatibilitySummary.latestApiVersions.map(av => (
-            <span key={av} className="compat-badge api" style={{ fontSize: '0.68rem', padding: '1px 6px' }}>
-              API v{av}
+            <span
+              key={av}
+              className="compat-badge api"
+              style={{ fontSize: '0.68rem', padding: '2px 7px' }}
+              title={`WIT interface package: pumpkin:plugin@${av}`}
+            >
+              WIT API v{av}
             </span>
           ))}
         </div>

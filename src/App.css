@@ -4101,3 +4101,84 @@ h3 {
     max-width: none;
   }
 }
+
+/* ── Server Compatibility Picker Bar ── */
+.server-compat-picker-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.5rem;
+  background: linear-gradient(135deg, rgba(255, 107, 0, 0.08) 0%, rgba(255, 255, 255, 0.02) 100%);
+  border: 1px solid rgba(255, 107, 0, 0.22);
+  border-radius: 12px;
+}
+
+.server-compat-picker-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.server-compat-picker-title {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.92rem;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.server-compat-picker-sub {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.server-compat-picker-pills {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.server-compat-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.42rem 0.85rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.16s ease;
+}
+
+.server-compat-pill:hover {
+  border-color: rgba(255, 107, 0, 0.45);
+  color: var(--text);
+  background: rgba(255, 107, 0, 0.08);
+}
+
+.server-compat-pill.active {
+  background: rgba(255, 107, 0, 0.16);
+  border-color: var(--primary);
+  color: var(--text);
+  box-shadow: 0 0 0 1px rgba(255, 107, 0, 0.25);
+}
+
+.server-compat-pill-tag {
+  font-size: 0.62rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(34, 197, 94, 0.18);
+  color: #4ade80;
+}

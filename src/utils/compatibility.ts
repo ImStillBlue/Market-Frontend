@@ -215,15 +215,184 @@ export function extractCompatibilityFromNotes(notes?: string | null): {
 }
 
 /**
+ * Friendly server profile options that users can select to filter plugins and versions
+ * by the Pumpkin / Minecraft version they are running.
+ */
+export interface PumpkinServerProfile {
+  id: string;
+  label: string;
+  shortLabel: string;
+  minecraftVersion: string;
+  pumpkinReleaseTag: string;
+  supportedApiVersions: string[];
+  description: string;
+  isLatest?: boolean;
+}
+
+export const PUMPKIN_SERVER_PROFILES: PumpkinServerProfile[] = [
+  {
+    id: '0.2.0',
+    label: 'Pumpkin v0.2.0 (Minecraft 26.3 — Latest Release)',
+    shortLabel: 'Pumpkin 0.2.0 · MC 26.3',
+    minecraftVersion: '26.3',
+    pumpkinReleaseTag: '0.2.0+26.3-26.51',
+    supportedApiVersions: ['0.1.0', '0.2.0'],
+    description: 'Latest tagged release (0.2.0+26.3-26.51). Supports WIT Plugin API v0.1.0 & v0.2.0.',
+    isLatest: true,
+  },
+  {
+    id: '0.1.0-dev',
+    label: 'Pumpkin v0.1.0-dev (Minecraft 26.2 — Legacy)',
+    shortLabel: 'Pumpkin 0.1.0-dev · MC 26.2',
+    minecraftVersion: '26.2',
+    pumpkinReleaseTag: '0.1.0-dev+26.2-26.45',
+    supportedApiVersions: ['0.1.0'],
+    description: 'Initial tagged release (0.1.0-dev+26.2-26.45) for Minecraft 26.2. Supports WIT Plugin API v0.1.0.',
+  },
+  {
+    id: 'nightly',
+    label: 'Pumpkin Nightly / Canary (Minecraft 26.3+)',
+    shortLabel: 'Nightly / Canary · MC 26.3+',
+    minecraftVersion: '26.3+',
+    pumpkinReleaseTag: 'nightly',
+    supportedApiVersions: ['0.2.0', '0.1.0'],
+    description: 'Bleeding-edge main branch builds (nightly / canary) using WIT Plugin API v0.2.0.',
+  },
+];
+
+const SERVER_FILTER_STORAGE_KEY = 'pumpkin_market_selected_server';
+
+export function getSavedServerProfileId(): string {
+  if (typeof window === 'undefined') return '';
+  try {
+    return window.localStorage.getItem(SERVER_FILTER_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+export function setSavedServerProfileId(profileId: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (!profileId) {
+      window.localStorage.removeItem(SERVER_FILTER_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(SERVER_FILTER_STORAGE_KEY, profileId);
+    }
+    window.dispatchEvent(new CustomEvent('pumpkin-server-filter-change', { detail: profileId }));
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+export function getServerProfileById(profileId?: string | null): PumpkinServerProfile | undefined {
+  if (!profileId) return undefined;
+  return PUMPKIN_SERVER_PROFILES.find((p) => p.id === profileId);
+}
+
+/**
+ * Formats a raw Pumpkin build tag (like "0.2.0+26.3-26.51" or "0.1.0-dev+26.2-26.45")
+ * into a clear, human-friendly label with its Minecraft version.
+ */
+export function formatPumpkinVersionBadge(rawTag: string): {
+  title: string;
+  mcVersion?: string;
+  rawTag: string;
+} {
+  const cleaned = rawTag.trim().replace(/^v(?=\d)/i, '');
+  if (cleaned.startsWith('0.2.0')) {
+    return {
+      title: 'Pumpkin v0.2.0',
+      mcVersion: 'MC 26.3',
+      rawTag: '0.2.0+26.3-26.51',
+    };
+  }
+  if (cleaned.startsWith('0.1.0')) {
+    return {
+      title: 'Pumpkin v0.1.0-dev',
+      mcVersion: 'MC 26.2',
+      rawTag: '0.1.0-dev+26.2-26.45',
+    };
+  }
+  if (cleaned === 'nightly' || cleaned === 'canary') {
+    return {
+      title: `Pumpkin ${cleaned.charAt(0).toUpperCase() + cleaned.slice(1)}`,
+      mcVersion: 'MC 26.3+',
+      rawTag: cleaned,
+    };
+  }
+  return {
+    title: `Pumpkin ${cleaned}`,
+    rawTag: cleaned,
+  };
+}
+
+/**
+ * Checks whether a specific normalized plugin release is compatible with a given PumpkinServerProfile ID
+ * (e.g. "0.2.0", "0.1.0-dev", "nightly", or a raw Pumpkin version string).
+ */
+export function isVersionCompatibleWithServer(
+  version: Pick<NormalizedPluginVersion, 'pumpkinVersions' | 'apiVersions'>,
+  serverFilter: string
+): boolean {
+  if (!serverFilter || serverFilter === 'all') return true;
+
+  const q = serverFilter.trim().toLowerCase();
+
+  // Check if it matches a predefined server profile ID
+  if (q === '0.2.0' || q === '0.2.0+26.3-26.51' || q === '26.3' || q === 'mc 26.3') {
+    return version.pumpkinVersions.some(
+      (pv) => pv.startsWith('0.2.') || pv.includes('26.3')
+    );
+  }
+
+  if (q === '0.1.0' || q === '0.1.0-dev' || q === '0.1.0-dev+26.2-26.45' || q === '26.2' || q === 'mc 26.2') {
+    return version.pumpkinVersions.some(
+      (pv) => pv.startsWith('0.1.') || pv.includes('26.2')
+    );
+  }
+
+  if (q === 'nightly' || q === 'canary') {
+    return (
+      version.pumpkinVersions.some(
+        (pv) => pv === 'nightly' || pv === 'canary' || pv.startsWith('0.2.')
+      ) || version.apiVersions.some((av) => av.startsWith('0.2.') || av.startsWith('0.1.'))
+    );
+  }
+
+  // Free-text / custom version match against pumpkinVersions or apiVersions
+  return (
+    version.pumpkinVersions.some((pv) => pv.toLowerCase().includes(q)) ||
+    version.apiVersions.some((av) => av.toLowerCase().includes(q))
+  );
+}
+
+/**
+ * Finds the best (newest) release of a plugin that is compatible with the selected server filter.
+ */
+export function findRecommendedVersionForServer(
+  versions: NormalizedPluginVersion[],
+  serverFilter?: string | null
+): NormalizedPluginVersion | undefined {
+  if (!versions.length) return undefined;
+  if (!serverFilter || serverFilter === 'all') {
+    return versions.find((v) => v.isLatest) ?? versions[0];
+  }
+  return versions.find((v) => isVersionCompatibleWithServer(v, serverFilter));
+}
+
+/**
  * Ensures that when a known Pumpkin release is present we also know its corresponding Plugin API version,
  * and when a known Plugin API version is present we also know its corresponding Pumpkin release.
  */
 function syncPumpkinAndApiSets(pumpkinSet: Set<string>, apiSet: Set<string>): void {
+  // Note: Tagged Pumpkin 0.2.0+26.3-26.51 (and 0.1.0-dev+26.2-26.45) both use WIT Plugin API 0.1.0
+  // unless WIT 0.2.0 was explicitly specified.
   if (apiSet.size === 0 && pumpkinSet.size > 0) {
     for (const pv of pumpkinSet) {
-      if (pv.startsWith('0.2.')) {
+      if (pv === 'nightly' || pv === 'canary') {
         apiSet.add('0.2.0');
-      } else if (pv.startsWith('0.1.')) {
+      } else if (pv.startsWith('0.2.') || pv.startsWith('0.1.')) {
         apiSet.add('0.1.0');
       }
     }
@@ -232,8 +401,9 @@ function syncPumpkinAndApiSets(pumpkinSet: Set<string>, apiSet: Set<string>): vo
     for (const av of apiSet) {
       if (av.startsWith('0.2.')) {
         pumpkinSet.add('0.2.0+26.3-26.51');
+        pumpkinSet.add('nightly');
       } else if (av.startsWith('0.1.')) {
-        pumpkinSet.add('0.1.0-dev+26.2-26.45');
+        pumpkinSet.add('0.2.0+26.3-26.51');
       }
     }
   }
@@ -273,14 +443,14 @@ function getAllPluginDescriptionText(plugin?: Partial<Plugin> | null): string {
  * when older marketplace releases do not have explicit metadata stored in the database.
  *
  * Timeline of Pumpkin tagged releases on the marketplace:
- * - Pumpkin `0.2.0+26.3-26.51` (Plugin API `0.2.0`): released 2026-10-08
- * - Pumpkin `0.1.0-dev+26.2-26.45` (Plugin API `0.1.0`): initial release era prior to 2026-10-08
+ * - Pumpkin `0.2.0+26.3-26.51` (MC 26.3, WIT API `0.1.0`): released 2026-09-20 (plugins migrated 2026-10-08+)
+ * - Pumpkin `0.1.0-dev+26.2-26.45` (MC 26.2, WIT API `0.1.0`): initial release era prior to 2026-10-08
  */
 function inferCompatibilityFromReleaseDate(createdAt?: string | null): ResolvedCompatibility {
   if (!createdAt) {
     return {
       pumpkinVersions: ['0.2.0+26.3-26.51'],
-      apiVersions: ['0.2.0'],
+      apiVersions: ['0.1.0'],
       isInferred: true,
     };
   }
@@ -299,7 +469,7 @@ function inferCompatibilityFromReleaseDate(createdAt?: string | null): ResolvedC
 
   return {
     pumpkinVersions: ['0.2.0+26.3-26.51'],
-    apiVersions: ['0.2.0'],
+    apiVersions: ['0.1.0'],
     isInferred: true,
   };
 }
@@ -331,68 +501,49 @@ export function resolveVersionCompatibility(
   const pumpkinSet = new Set(explicitPumpkin);
   const apiSet = new Set(explicitApi.map(normalizeApiVersionToken));
 
-  if (pumpkinSet.size > 0 || apiSet.size > 0) {
-    // Also merge any explicit mentions from this version's release notes before syncing
-    const notesCompat = extractCompatibilityFromNotes(version?.release_notes);
-    for (const pv of notesCompat.pumpkinVersions) pumpkinSet.add(pv);
-    for (const av of notesCompat.apiVersions) apiSet.add(av);
-    syncPumpkinAndApiSets(pumpkinSet, apiSet);
-    return {
-      pumpkinVersions: Array.from(pumpkinSet),
-      apiVersions: Array.from(apiSet),
-      isInferred: false,
-    };
-  }
-
-  // Check release notes for compatibility mentions or structured compatibility comment
+  // Merge any explicit mentions from this version's release notes
   const fromNotes = extractCompatibilityFromNotes(version?.release_notes);
-  if (fromNotes.pumpkinVersions.length > 0 || fromNotes.apiVersions.length > 0) {
-    return {
-      pumpkinVersions: fromNotes.pumpkinVersions,
-      apiVersions: fromNotes.apiVersions,
-      isInferred: !fromNotes.fromStructuredComment,
-    };
+  for (const pv of fromNotes.pumpkinVersions) pumpkinSet.add(pv);
+  for (const av of fromNotes.apiVersions) apiSet.add(av);
+
+  // If we only have a probed WIT API version (e.g. 0.1.0 from binary) and no explicit Pumpkin version yet,
+  // check the plugin description or release date to determine which Pumpkin release (0.2.0 vs 0.1.0-dev) it targets.
+  if (pumpkinSet.size === 0) {
+    const pluginLevelPumpkin = [
+      ...normalizeVersionList(plugin?.pumpkin_versions),
+      ...normalizeVersionList(plugin?.supported_pumpkin_versions),
+      ...normalizeVersionList(plugin?.pumpkin_version),
+    ];
+    for (const pv of pluginLevelPumpkin) pumpkinSet.add(pv);
+
+    if (pumpkinSet.size === 0 && plugin) {
+      const descCompat = extractCompatibilityFromNotes(getAllPluginDescriptionText(plugin));
+      for (const pv of descCompat.pumpkinVersions) pumpkinSet.add(pv);
+    }
+
+    if (pumpkinSet.size === 0) {
+      const dateInferred = inferCompatibilityFromReleaseDate(
+        version?.created_at || plugin?.updated_at || plugin?.created_at
+      );
+      for (const pv of dateInferred.pumpkinVersions) pumpkinSet.add(pv);
+      for (const av of dateInferred.apiVersions) {
+        if (apiSet.size === 0) apiSet.add(av);
+      }
+    }
   }
 
-  // Check plugin-level fields if this version has no explicit fields
-  const pluginLevelPumpkin = [
-    ...normalizeVersionList(plugin?.pumpkin_versions),
-    ...normalizeVersionList(plugin?.supported_pumpkin_versions),
-    ...normalizeVersionList(plugin?.pumpkin_version),
-  ];
-  const pluginLevelApi = [
-    ...normalizeVersionList(plugin?.api_versions),
-    ...normalizeVersionList(plugin?.supported_api_versions),
-    ...normalizeVersionList(plugin?.plugin_api_versions),
-    ...normalizeVersionList(plugin?.api_version),
-    ...normalizeVersionList(plugin?.plugin_api_version),
-  ];
+  syncPumpkinAndApiSets(pumpkinSet, apiSet);
 
-  if (pluginLevelPumpkin.length > 0 || pluginLevelApi.length > 0) {
-    const pSet = new Set(pluginLevelPumpkin);
-    const aSet = new Set(pluginLevelApi.map(normalizeApiVersionToken));
-    syncPumpkinAndApiSets(pSet, aSet);
-    return {
-      pumpkinVersions: Array.from(pSet),
-      apiVersions: Array.from(aSet),
-      isInferred: false,
-    };
-  }
+  const isExplicit =
+    explicitPumpkin.length > 0 ||
+    explicitApi.length > 0 ||
+    Boolean(fromNotes.fromStructuredComment);
 
-  // Check plugin description / translated_descriptions (only when plugin reference is passed)
-  const descText = getAllPluginDescriptionText(plugin);
-  const fromDescription = extractCompatibilityFromNotes(descText);
-  if (fromDescription.pumpkinVersions.length > 0 || fromDescription.apiVersions.length > 0) {
-    return {
-      pumpkinVersions: fromDescription.pumpkinVersions,
-      apiVersions: fromDescription.apiVersions,
-      isInferred: true,
-    };
-  }
-
-  // Fallback for legacy marketplace releases that predated explicit compatibility metadata:
-  // infer from the release's publication date relative to Pumpkin's tagged releases.
-  return inferCompatibilityFromReleaseDate(version?.created_at || plugin?.updated_at || plugin?.created_at);
+  return {
+    pumpkinVersions: Array.from(pumpkinSet),
+    apiVersions: Array.from(apiSet),
+    isInferred: !isExplicit,
+  };
 }
 
 /**
@@ -488,3 +639,138 @@ export function getPluginCompatibilitySummary(
     allApiVersions: Array.from(allApi),
   };
 }
+
+/**
+ * In-memory cache of full PluginDetail objects (including `versions[]`) keyed by plugin id or public_id,
+ * so catalog pages (Home, Search, PluginCard) can resolve exact multi-version compatibility without redundant requests.
+ */
+const pluginDetailVersionsCache = new Map<string, PluginVersion[]>();
+
+export function cachePluginVersions(plugin: Partial<Plugin>): void {
+  if (!plugin || !Array.isArray(plugin.versions) || plugin.versions.length === 0) return;
+  if (plugin.id != null) {
+    pluginDetailVersionsCache.set(String(plugin.id), plugin.versions);
+  }
+  if (plugin.public_id) {
+    pluginDetailVersionsCache.set(String(plugin.public_id), plugin.versions);
+  }
+}
+
+export function getCachedPluginVersions(plugin?: Partial<Plugin> | null): PluginVersion[] | undefined {
+  if (!plugin) return undefined;
+  if (Array.isArray(plugin.versions) && plugin.versions.length > 0) {
+    return plugin.versions;
+  }
+  if (plugin.id != null && pluginDetailVersionsCache.has(String(plugin.id))) {
+    return pluginDetailVersionsCache.get(String(plugin.id));
+  }
+  if (plugin.public_id && pluginDetailVersionsCache.has(String(plugin.public_id))) {
+    return pluginDetailVersionsCache.get(String(plugin.public_id));
+  }
+  return undefined;
+}
+
+const inflightHydrations = new Map<string, Promise<PluginVersion[] | undefined>>();
+
+/**
+ * Hydrates the version history (`versions[]`) for a list of plugins from `/api/plugins/:id`
+ * when not already cached, so filtering by older server versions (e.g. Pumpkin 0.1.0-dev)
+ * discovers plugins that support that server via an older release.
+ */
+export async function hydratePluginsVersionHistory(
+  plugins: Partial<Plugin>[],
+  fetcher: (idOrPublicId: string | number) => Promise<Partial<Plugin> | null | undefined>
+): Promise<void> {
+  const missing = plugins.filter((p) => p && !getCachedPluginVersions(p));
+  if (missing.length === 0) return;
+
+  // Fetch sequentially with small spacing to avoid triggering rate limits on the API
+  for (const p of missing) {
+    const key = String(p.public_id || p.id || '');
+    if (!key) continue;
+
+    if (!inflightHydrations.has(key)) {
+      const promise = fetcher(p.public_id || p.id!)
+        .then((detail) => {
+          if (detail && Array.isArray(detail.versions)) {
+            cachePluginVersions(detail);
+            return detail.versions;
+          }
+          return undefined;
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          inflightHydrations.delete(key);
+        });
+      inflightHydrations.set(key, promise);
+    }
+
+    await inflightHydrations.get(key);
+  }
+}
+
+export interface PluginServerMatchResult {
+  compatible: boolean;
+  recommendedVersion?: NormalizedPluginVersion;
+  latestVersion?: NormalizedPluginVersion;
+  requiresOlderVersion: boolean;
+  allVersions: NormalizedPluginVersion[];
+}
+
+/**
+ * Evaluates a plugin (from either a list endpoint or detail endpoint) against a user's selected
+ * Pumpkin server version and/or Plugin API filter, returning whether it can run and which plugin
+ * release is recommended for their server.
+ */
+export function evaluatePluginForServer(
+  plugin: Plugin,
+  serverFilter?: string | null,
+  apiFilter?: string | null
+): PluginServerMatchResult {
+  const cachedVersions = getCachedPluginVersions(plugin);
+  const hydratedPlugin: Plugin = cachedVersions
+    ? { ...plugin, versions: cachedVersions }
+    : plugin;
+
+  const allVersions = getNormalizedPluginVersions(hydratedPlugin);
+  const latestVersion = allVersions.find((v) => v.isLatest) ?? allVersions[0];
+
+  const hasServerFilter = Boolean(serverFilter && serverFilter !== 'all');
+  const hasApiFilter = Boolean(apiFilter && apiFilter !== 'all');
+
+  if (!hasServerFilter && !hasApiFilter) {
+    return {
+      compatible: true,
+      recommendedVersion: latestVersion,
+      latestVersion,
+      requiresOlderVersion: false,
+      allVersions,
+    };
+  }
+
+  const matchingVersion = allVersions.find((v) => {
+    const serverOk = !hasServerFilter || isVersionCompatibleWithServer(v, serverFilter!);
+    const apiOk =
+      !hasApiFilter ||
+      v.apiVersions.some((av) => av.toLowerCase().includes(apiFilter!.trim().toLowerCase()));
+    return serverOk && apiOk;
+  });
+
+  if (!matchingVersion) {
+    return {
+      compatible: false,
+      latestVersion,
+      requiresOlderVersion: false,
+      allVersions,
+    };
+  }
+
+  return {
+    compatible: true,
+    recommendedVersion: matchingVersion,
+    latestVersion,
+    requiresOlderVersion: Boolean(latestVersion && matchingVersion.version !== latestVersion.version),
+    allVersions,
+  };
+}
+

@@ -38,23 +38,10 @@ export function extractWasmPluginApiVersions(bytes: Uint8Array): string[] {
   try {
     const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
     const found: string[] = [];
-    const metadataRegex = /pumpkin:plugin\/metadata@([0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.+_-]+)?)/gi;
+    // Match strict X.Y.Z semver followed by non-alphanumeric delimiter (WIT binary strings often have length bytes immediately following)
+    const witRegex = /pumpkin:plugin(?:\/[a-zA-Z0-9_-]+)*@([0-9]+\.[0-9]+\.[0-9]+)(?![0-9A-Za-z._-])/gi;
     let match: RegExpExecArray | null;
-    while ((match = metadataRegex.exec(text)) !== null) {
-      if (match[1] && !found.includes(match[1])) {
-        found.push(match[1]);
-      }
-    }
-
-    const generalRegex = /pumpkin:plugin(?:\/[a-zA-Z0-9_-]+)+@([0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.+_-]+)?)/gi;
-    while ((match = generalRegex.exec(text)) !== null) {
-      if (match[1] && !found.includes(match[1])) {
-        found.push(match[1]);
-      }
-    }
-
-    const rootPkgRegex = /pumpkin:plugin@([0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.+_-]+)?)/gi;
-    while ((match = rootPkgRegex.exec(text)) !== null) {
+    while ((match = witRegex.exec(text)) !== null) {
       if (match[1] && !found.includes(match[1])) {
         found.push(match[1]);
       }
