@@ -16,6 +16,7 @@ import {
   cleanReleaseNotes,
   type NormalizedPluginVersion,
 } from '../utils/compatibility';
+import { extractWasmPluginApiVersions } from '../utils/fileValidation';
 
 const getYoutubeVideoId = (url: string) => {
   if (!url) return null;
@@ -688,10 +689,35 @@ const PluginDetail = () => {
     return { avg: (sum / total).toFixed(1), total, distribution };
   }, [plugin?.reviews]);
 
+  const [probedApiVersions, setProbedApiVersions] = useState<string[]>([]);
+
+  useEffect(() => {
+    setProbedApiVersions([]);
+    if (!plugin || !id || plugin.type !== 'free') return;
+
+    let cancelled = false;
+    api
+      .get(`/plugins/${id}/download`, { responseType: 'arraybuffer' })
+      .then((res) => {
+        if (cancelled || !res.data) return;
+        const detected = extractWasmPluginApiVersions(new Uint8Array(res.data));
+        if (detected.length > 0) {
+          setProbedApiVersions(detected);
+        }
+      })
+      .catch(() => {
+        // Ignore background probe errors
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [plugin?.id, id]);
+
   const normalizedVersions = useMemo(() => {
     if (!plugin) return [];
-    return getNormalizedPluginVersions(plugin);
-  }, [plugin]);
+    return getNormalizedPluginVersions(plugin, probedApiVersions);
+  }, [plugin, probedApiVersions]);
 
   const compatibilitySummary = useMemo(() => {
     if (!plugin) {
@@ -702,8 +728,8 @@ const PluginDetail = () => {
         allApiVersions: [],
       };
     }
-    return getPluginCompatibilitySummary(plugin);
-  }, [plugin]);
+    return getPluginCompatibilitySummary(plugin, probedApiVersions);
+  }, [plugin, probedApiVersions]);
 
   const filteredVersions = useMemo(() => {
     return normalizedVersions.filter((v) => {

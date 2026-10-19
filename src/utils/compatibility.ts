@@ -161,8 +161,8 @@ export function extractCompatibilityFromNotes(notes?: string | null): {
   const pumpkinSet = new Set<string>();
   const apiSet = new Set<string>();
 
-  // 1. Match WIT package references like pumpkin:plugin/metadata@0.2.0 or pumpkin:plugin@0.1.0
-  const witRegex = /pumpkin:plugin(?:\/[a-z0-9-]+)?@([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.+_-]+)?)/gi;
+  // 1. Match WIT package references like pumpkin:plugin/metadata@0.2.0, pumpkin:plugin/logging@0.1.0, or pumpkin:plugin@0.1.0
+  const witRegex = /pumpkin:plugin(?:\/[a-z0-9_-]+)*@([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.+_-]+)?)/gi;
   let match: RegExpExecArray | null;
   while ((match = witRegex.exec(notes)) !== null) {
     if (match[1]) {
@@ -196,17 +196,16 @@ export function extractCompatibilityFromNotes(notes?: string | null): {
     }
   }
 
-  // 5. If a known Pumpkin release with build metadata (like 0.2.0+26.3-26.51) was found, and no API version was explicitly found,
-  // infer the corresponding base Plugin API version (0.2.0 or 0.1.0).
-  if (apiSet.size === 0 && pumpkinSet.size > 0) {
-    for (const pv of pumpkinSet) {
-      if (pv.startsWith('0.2.')) {
-        apiSet.add('0.2.0');
-      } else if (pv.startsWith('0.1.')) {
-        apiSet.add('0.1.0');
-      }
-    }
+  // 5. Match "-Pumpkin-26.3" / "Pumpkin 26.3" or "-Pumpkin-26.2" / "Pumpkin 26.2" build shorthand
+  if (/[-_\s]pumpkin[-_\s]+26\.3\b/i.test(notes)) {
+    pumpkinSet.add('0.2.0+26.3-26.51');
   }
+  if (/[-_\s]pumpkin[-_\s]+26\.2\b/i.test(notes)) {
+    pumpkinSet.add('0.1.0-dev+26.2-26.45');
+  }
+
+  // 6. Cross-infer corresponding Pumpkin release / Plugin API version when one side is known
+  syncPumpkinAndApiSets(pumpkinSet, apiSet);
 
   return {
     pumpkinVersions: Array.from(pumpkinSet),
@@ -216,12 +215,103 @@ export function extractCompatibilityFromNotes(notes?: string | null): {
 }
 
 /**
+ * Ensures that when a known Pumpkin release is present we also know its corresponding Plugin API version,
+ * and when a known Plugin API version is present we also know its corresponding Pumpkin release.
+ */
+function syncPumpkinAndApiSets(pumpkinSet: Set<string>, apiSet: Set<string>): void {
+  if (apiSet.size === 0 && pumpkinSet.size > 0) {
+    for (const pv of pumpkinSet) {
+      if (pv.startsWith('0.2.')) {
+        apiSet.add('0.2.0');
+      } else if (pv.startsWith('0.1.')) {
+        apiSet.add('0.1.0');
+      }
+    }
+  }
+  if (pumpkinSet.size === 0 && apiSet.size > 0) {
+    for (const av of apiSet) {
+      if (av.startsWith('0.2.')) {
+        pumpkinSet.add('0.2.0+26.3-26.51');
+      } else if (av.startsWith('0.1.')) {
+        pumpkinSet.add('0.1.0-dev+26.2-26.45');
+      }
+    }
+  }
+}
+
+/**
+ * Extracts all description text from a Plugin object, including localized `translated_descriptions`.
+ */
+function getAllPluginDescriptionText(plugin?: Partial<Plugin> | null): string {
+  if (!plugin) return '';
+  const parts: string[] = [];
+  if (plugin.short_description) parts.push(plugin.short_description);
+  if (plugin.description) parts.push(plugin.description);
+
+  if (plugin.translated_descriptions) {
+    try {
+      const translations =
+        typeof plugin.translated_descriptions === 'string'
+          ? JSON.parse(plugin.translated_descriptions)
+          : plugin.translated_descriptions;
+      if (translations && typeof translations === 'object') {
+        for (const val of Object.values(translations)) {
+          if (typeof val === 'string' && val.trim()) {
+            parts.push(val);
+          }
+        }
+      }
+    } catch {
+      // Ignore malformed JSON
+    }
+  }
+  return parts.join('\n');
+}
+
+/**
+ * Infers Pumpkin release and Plugin API compatibility from a release's publication timestamp
+ * when older marketplace releases do not have explicit metadata stored in the database.
+ *
+ * Timeline of Pumpkin tagged releases on the marketplace:
+ * - Pumpkin `0.2.0+26.3-26.51` (Plugin API `0.2.0`): released 2026-10-08
+ * - Pumpkin `0.1.0-dev+26.2-26.45` (Plugin API `0.1.0`): initial release era prior to 2026-10-08
+ */
+function inferCompatibilityFromReleaseDate(createdAt?: string | null): ResolvedCompatibility {
+  if (!createdAt) {
+    return {
+      pumpkinVersions: ['0.2.0+26.3-26.51'],
+      apiVersions: ['0.2.0'],
+      isInferred: true,
+    };
+  }
+
+  const ts = new Date(createdAt).getTime();
+  // Pumpkin 0.2.0+26.3-26.51 transition cutoff (2026-10-08T18:00:00Z)
+  const pumpkin020Cutoff = Date.parse('2026-10-08T18:00:00Z');
+
+  if (!Number.isNaN(ts) && ts < pumpkin020Cutoff) {
+    return {
+      pumpkinVersions: ['0.1.0-dev+26.2-26.45'],
+      apiVersions: ['0.1.0'],
+      isInferred: true,
+    };
+  }
+
+  return {
+    pumpkinVersions: ['0.2.0+26.3-26.51'],
+    apiVersions: ['0.2.0'],
+    isInferred: true,
+  };
+}
+
+/**
  * Resolves supported Pumpkin releases and Plugin API versions for a given PluginVersion,
- * checking explicit fields first and falling back to release notes / plugin-level fields.
+ * checking explicit fields first and falling back to release notes / plugin-level fields / release era.
  */
 export function resolveVersionCompatibility(
   version?: Partial<PluginVersion> | null,
-  plugin?: Partial<Plugin> | null
+  plugin?: Partial<Plugin> | null,
+  probedApiVersions?: string[]
 ): ResolvedCompatibility {
   const explicitPumpkin = [
     ...normalizeVersionList(version?.pumpkin_versions),
@@ -235,15 +325,21 @@ export function resolveVersionCompatibility(
     ...normalizeVersionList(version?.plugin_api_versions),
     ...normalizeVersionList(version?.api_version),
     ...normalizeVersionList(version?.plugin_api_version),
+    ...normalizeVersionList(probedApiVersions),
   ];
 
-  const dedupPumpkin = Array.from(new Set(explicitPumpkin));
-  const dedupApi = Array.from(new Set(explicitApi.map(normalizeApiVersionToken)));
+  const pumpkinSet = new Set(explicitPumpkin);
+  const apiSet = new Set(explicitApi.map(normalizeApiVersionToken));
 
-  if (dedupPumpkin.length > 0 || dedupApi.length > 0) {
+  if (pumpkinSet.size > 0 || apiSet.size > 0) {
+    // Also merge any explicit mentions from this version's release notes before syncing
+    const notesCompat = extractCompatibilityFromNotes(version?.release_notes);
+    for (const pv of notesCompat.pumpkinVersions) pumpkinSet.add(pv);
+    for (const av of notesCompat.apiVersions) apiSet.add(av);
+    syncPumpkinAndApiSets(pumpkinSet, apiSet);
     return {
-      pumpkinVersions: dedupPumpkin,
-      apiVersions: dedupApi,
+      pumpkinVersions: Array.from(pumpkinSet),
+      apiVersions: Array.from(apiSet),
       isInferred: false,
     };
   }
@@ -273,30 +369,40 @@ export function resolveVersionCompatibility(
   ];
 
   if (pluginLevelPumpkin.length > 0 || pluginLevelApi.length > 0) {
+    const pSet = new Set(pluginLevelPumpkin);
+    const aSet = new Set(pluginLevelApi.map(normalizeApiVersionToken));
+    syncPumpkinAndApiSets(pSet, aSet);
     return {
-      pumpkinVersions: Array.from(new Set(pluginLevelPumpkin)),
-      apiVersions: Array.from(new Set(pluginLevelApi.map(normalizeApiVersionToken))),
+      pumpkinVersions: Array.from(pSet),
+      apiVersions: Array.from(aSet),
       isInferred: false,
     };
   }
 
-  // Last resort: check plugin description or short_description
-  const fromDescription = extractCompatibilityFromNotes(
-    [plugin?.short_description, plugin?.description].filter(Boolean).join('\n')
-  );
+  // Check plugin description / translated_descriptions (only when plugin reference is passed)
+  const descText = getAllPluginDescriptionText(plugin);
+  const fromDescription = extractCompatibilityFromNotes(descText);
+  if (fromDescription.pumpkinVersions.length > 0 || fromDescription.apiVersions.length > 0) {
+    return {
+      pumpkinVersions: fromDescription.pumpkinVersions,
+      apiVersions: fromDescription.apiVersions,
+      isInferred: true,
+    };
+  }
 
-  return {
-    pumpkinVersions: fromDescription.pumpkinVersions,
-    apiVersions: fromDescription.apiVersions,
-    isInferred: fromDescription.pumpkinVersions.length > 0 || fromDescription.apiVersions.length > 0,
-  };
+  // Fallback for legacy marketplace releases that predated explicit compatibility metadata:
+  // infer from the release's publication date relative to Pumpkin's tagged releases.
+  return inferCompatibilityFromReleaseDate(version?.created_at || plugin?.updated_at || plugin?.created_at);
 }
 
 /**
  * Returns all published releases for a plugin ordered newest first,
  * with normalized compatibility metadata and a clear `isLatest` flag.
  */
-export function getNormalizedPluginVersions(plugin: Plugin): NormalizedPluginVersion[] {
+export function getNormalizedPluginVersions(
+  plugin: Plugin,
+  probedLatestApiVersions?: string[]
+): NormalizedPluginVersion[] {
   const rawVersions: PluginVersion[] =
     plugin.versions && plugin.versions.length > 0
       ? [...plugin.versions]
@@ -327,12 +433,19 @@ export function getNormalizedPluginVersions(plugin: Plugin): NormalizedPluginVer
   const latestIndex = explicitLatestIndex >= 0 ? explicitLatestIndex : 0;
 
   return rawVersions.map((v, idx) => {
-    const cleanVer = v.version.replace(/^v(?=\d)/i, '');
-    const compat = resolveVersionCompatibility(v, idx === latestIndex ? plugin : null);
+    const rawVer = (v.version || '').trim();
+    const cleanVer = rawVer ? rawVer.replace(/^v(?=\d)/i, '') : '0.1.0';
+    const isLatest = idx === latestIndex;
+    const compat = resolveVersionCompatibility(
+      v,
+      isLatest ? plugin : null,
+      isLatest ? probedApiVersionsOrEmpty(probedLatestApiVersions) : undefined
+    );
     return {
       ...v,
-      isLatest: idx === latestIndex,
-      displayVersion: `v${cleanVer}`,
+      version: rawVer || cleanVer,
+      isLatest,
+      displayVersion: /^\d/.test(cleanVer) ? `v${cleanVer}` : cleanVer,
       pumpkinVersions: compat.pumpkinVersions,
       apiVersions: compat.apiVersions,
       isCompatibilityInferred: compat.isInferred,
@@ -340,17 +453,24 @@ export function getNormalizedPluginVersions(plugin: Plugin): NormalizedPluginVer
   });
 }
 
+function probedApiVersionsOrEmpty(probed?: string[]): string[] | undefined {
+  return probed && probed.length > 0 ? probed : undefined;
+}
+
 /**
  * Aggregates all unique supported Pumpkin releases and Plugin API versions across a plugin's releases
  * (prioritizing the latest release for summary displays).
  */
-export function getPluginCompatibilitySummary(plugin: Plugin): {
+export function getPluginCompatibilitySummary(
+  plugin: Plugin,
+  probedLatestApiVersions?: string[]
+): {
   latestPumpkinVersions: string[];
   latestApiVersions: string[];
   allPumpkinVersions: string[];
   allApiVersions: string[];
 } {
-  const versions = getNormalizedPluginVersions(plugin);
+  const versions = getNormalizedPluginVersions(plugin, probedLatestApiVersions);
   const latest = versions.find((v) => v.isLatest) ?? versions[0];
 
   const allPumpkin = new Set<string>();
