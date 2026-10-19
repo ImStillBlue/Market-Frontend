@@ -13,6 +13,8 @@ export interface WasmValidationResult {
     isModuleValid: boolean;
     magicValid: boolean;
     format: 'Core Module (v1)' | 'Component Model (WIT / Preview 2)';
+    detectedApiVersion?: string;
+    detectedApiVersions?: string[];
   };
 }
 
@@ -27,6 +29,34 @@ export interface ImageValidationResult {
 
 export const MAX_WASM_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
 export const MAX_RAW_IMAGE_BYTES = 20 * 1024 * 1024; // 20 MB max raw upload before compression
+
+/**
+ * Extracts `pumpkin:plugin@...` or `pumpkin:plugin/<interface>@<version>` WIT API versions
+ * embedded inside a compiled WebAssembly binary.
+ */
+export function extractWasmPluginApiVersions(bytes: Uint8Array): string[] {
+  try {
+    const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+    const found: string[] = [];
+    const metadataRegex = /pumpkin:plugin\/metadata@([0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.+_-]+)?)/g;
+    let match: RegExpExecArray | null;
+    while ((match = metadataRegex.exec(text)) !== null) {
+      if (match[1] && !found.includes(match[1])) {
+        found.push(match[1]);
+      }
+    }
+
+    const generalRegex = /pumpkin:plugin(?:\/[a-zA-Z0-9_-]+)?@([0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.+_-]+)?)/g;
+    while ((match = generalRegex.exec(text)) !== null) {
+      if (match[1] && !found.includes(match[1])) {
+        found.push(match[1]);
+      }
+    }
+    return found;
+  } catch {
+    return [];
+  }
+}
 
 /**
  * Reads an unsigned LEB128 integer from Uint8Array at given offset.
@@ -147,6 +177,9 @@ export async function validateWasmFile(file: File): Promise<WasmValidationResult
       };
     }
 
+    const detectedApiVersions = extractWasmPluginApiVersions(bytes);
+    const detectedApiVersion = detectedApiVersions[0];
+
     if (isCoreModule) {
       // Bytecode verification for Core Modules via browser's built-in engine
       if (typeof WebAssembly !== 'undefined' && typeof WebAssembly.validate === 'function') {
@@ -168,6 +201,8 @@ export async function validateWasmFile(file: File): Promise<WasmValidationResult
           isModuleValid: true,
           magicValid: true,
           format: 'Core Module (v1)',
+          detectedApiVersion,
+          detectedApiVersions,
         },
       };
     }
@@ -190,6 +225,8 @@ export async function validateWasmFile(file: File): Promise<WasmValidationResult
         isModuleValid: true,
         magicValid: true,
         format: 'Component Model (WIT / Preview 2)',
+        detectedApiVersion,
+        detectedApiVersions,
       },
     };
   } catch (err: any) {
